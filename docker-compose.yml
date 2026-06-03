@@ -1,0 +1,72 @@
+# VAP harness: MCP server <- VAP proxy <- scripted agent.
+# All services build from the repo root so the proxy/agent can pull in schemas and
+# the Python reference client.
+#
+#   docker compose up --build
+#
+# The agent runs the workflows once the proxy is healthy, then exits.
+
+services:
+  mcp-server:
+    build:
+      context: .
+      dockerfile: mcp-server/Dockerfile
+    environment:
+      HOST: 0.0.0.0
+      PORT: "8000"
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health',timeout=2).status==200 else 1)"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  vap-proxy:
+    build:
+      context: .
+      dockerfile: proxy/Dockerfile
+    environment:
+      HOST: 0.0.0.0
+      PORT: "9000"
+      UPSTREAM_URL: http://mcp-server:8000/mcp
+      VAP_JUDGE: mock                       # mock (default, deterministic) | llm
+      VAP_CONFIG: /app/vap-gateway.yaml
+      VAP_AUDIT_PATH: /app/vap-audit.jsonl
+      # ---- Flip to a REAL OpenAI-compatible LLM judge: set VAP_JUDGE=llm above and
+      # uncomment ONE block below. Judge token usage is billed to the session
+      # `tokens` budget meter; a broken judge fails SAFE unless VAP_LLM_FAILOPEN=true.
+      #
+      # (a) OpenAI:
+      # VAP_LLM_BASE_URL: https://api.openai.com/v1
+      # VAP_LLM_API_KEY: ${OPENAI_API_KEY}
+      # VAP_LLM_MODEL: gpt-4o-mini
+      #
+      # (b) Ollama (local; no API key). Use host.docker.internal to reach the host:
+      # VAP_LLM_BASE_URL: http://host.docker.internal:11434/v1
+      # VAP_LLM_MODEL: llama3.1
+      #
+      # VAP_LLM_TIMEOUT: "20"
+      # VAP_LLM_TEMPERATURE: "0"
+      # VAP_LLM_FAILOPEN: "false"
+    ports:
+      - "9000:9000"
+    depends_on:
+      mcp-server:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:9000/health',timeout=2).status==200 else 1)"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  agent:
+    build:
+      context: .
+      dockerfile: agent/Dockerfile
+    environment:
+      PROXY_URL: http://vap-proxy:9000
+    depends_on:
+      vap-proxy:
+        condition: service_healthy
+    restart: "no"

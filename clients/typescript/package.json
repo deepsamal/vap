@@ -1,0 +1,19 @@
+{
+  "name": "@vap/client",
+  "version": "0.1.0",
+  "description": "Reference TypeScript binding for the Verifiable Agent Protocol (VAP).",
+  "license": "MIT",
+  "type": "module",
+  "main": "dist/vapClient.js",
+  "types": "dist/vapClient.d.ts",
+  "files": ["dist", "src"],
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit"
+  },
+  "engines": { "node": ">=18" },
+  "devDependencies": {
+    "@types/node": "20.11.30",
+    "typescript": "5.4.5"
+  }
+}

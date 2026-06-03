@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+
+# Node / TypeScript
+node_modules/
+dist/
+*.tsbuildinfo
+
+# VAP runtime artifacts (never commit audit logs)
+*.jsonl
+vap-audit.jsonl
+**/vap-audit.jsonl
+
+# Env / secrets
+.env
+.env.*
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

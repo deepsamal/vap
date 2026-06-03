@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vap.dev/schemas/0.1/intent-envelope.schema.json",
+  "title": "VAP Intent Envelope (per-call)",
+  "description": "Lightweight per-call message bound to an accepted Scope Commitment by session_id. Carries the rationale for THIS call. Checked deterministically against the active commitment (scope/budget/policy); semantic (LLM) re-judgement is invoked only when the C5 risk scorer crosses threshold. Note: full chain-of-thought MUST NOT be sent here — only a minimal structured intent claim.",
+  "type": "object",
+  "required": ["vap", "type", "session_id", "intent", "call"],
+  "additionalProperties": false,
+  "properties": {
+    "vap": { "type": "string", "const": "0.1" },
+    "type": { "type": "string", "const": "intent_call" },
+    "session_id": {
+      "type": "string",
+      "description": "References the active Scope Commitment. The server MUST reject calls whose session_id has no accepted commitment.",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "intent": {
+      "type": "object",
+      "description": "The verifiable 'why' for this specific call. Minimal and checkable — NOT raw reasoning trace.",
+      "required": ["rationale", "expected_effect"],
+      "additionalProperties": false,
+      "properties": {
+        "rationale": {
+          "type": "string",
+          "description": "Short justification linking this call to the session goal (e.g. 'Ticket SUP-9931 reports a double-charge; refunding the duplicate').",
+          "minLength": 1,
+          "maxLength": 1000
+        },
+        "expected_effect": {
+          "type": "string",
+          "description": "The bounded outcome the agent expects (e.g. 'one refund <= $120 to original payment method'). Used to check args are consistent with stated intent.",
+          "minLength": 1,
+          "maxLength": 1000
+        },
+        "step": {
+          "type": "integer",
+          "description": "Advisory position in the current plan. Informational; drift is NOT defined as deviation from step order.",
+          "minimum": 0
+        },
+        "sensitivity": {
+          "type": "string",
+          "description": "Self-declared risk class. Drives the C5 risk scorer. Servers MAY override based on the tool being called.",
+          "enum": ["reads", "writes_data", "writes_money", "deletes", "sends_external", "grants_access"]
+        },
+        "reasoning_digest": {
+          "type": "string",
+          "description": "Optional hash of the agent's full reasoning for this call, retained client-side / in audit. Lets auditors later verify a disclosed CoT matches, without transmitting it. Format 'sha256:<hex>'.",
+          "pattern": "^[a-z0-9]+:[A-Fa-f0-9]+$"
+        }
+      }
+    },
+    "call": {
+      "type": "object",
+      "description": "The actual tool invocation (mirrors the underlying MCP tools/call).",
+      "required": ["tool", "arguments"],
+      "additionalProperties": false,
+      "properties": {
+        "tool": {
+          "type": "string",
+          "description": "Tool name. MUST satisfy the active commitment's tools_allow \\ tools_deny."
+        },
+        "arguments": {
+          "type": "object",
+          "description": "Tool arguments. Validated against the tool's own schema. Argument-level constraints, if any, are enforced by the deployment-local operator policy hook (C4), not by the VAP protocol.",
+          "additionalProperties": true
+        }
+      }
+    },
+    "signature": {
+      "type": "string",
+      "description": "Optional JWS over the canonicalized envelope (JCS). REQUIRED when the server advertises require_signed=true."
+    }
+  }
+}

@@ -1,0 +1,77 @@
+# VAP gateway configuration. Env vars override individual values at runtime.
+# A tiny stdlib parser reads this when PyYAML is not installed.
+#
+# Core protocol vs deployment-local:
+#   * CORE PROTOCOL  = tool IDENTITY (public tool names) + universal BUDGET meters.
+#   * DEPLOYMENT-LOCAL (this file) = per-tool argument rules (policy.rules) and the
+#     operator-fallback per-tool meter costs (tool_costs). These are NOT part of the
+#     standardized VAP wire schema; they are operator config you tune per deployment.
+
+semantic_judge:
+  # Risk threshold at/above which the (expensive) semantic judge fires.
+  invoke_at: 0.5
+  # backend selected via VAP_JUDGE env (mock|llm); mock is deterministic.
+
+# ---- Real LLM judge (only used when VAP_JUDGE=llm) -------------------------
+# All of these are normally set via env vars (they take precedence). Documented
+# here so the gateway config is self-describing.
+#   VAP_JUDGE=llm
+#   VAP_LLM_BASE_URL   OpenAI:  https://api.openai.com/v1
+#                      Ollama:  http://localhost:11434/v1   (no API key needed)
+#   VAP_LLM_API_KEY    OpenAI key; leave blank/unset for local Ollama
+#   VAP_LLM_MODEL      e.g. gpt-4o-mini  or  llama3.1
+#   VAP_LLM_TIMEOUT    seconds (default 20)
+#   VAP_LLM_TEMPERATURE  default 0 (deterministic)
+#   VAP_LLM_FAILOPEN   default false = a broken judge fails SAFE (-> clarify),
+#                      never rubber-stamps. Set true only if you accept that risk.
+# Judge token usage (usage.total_tokens) is billed to the session `tokens` meter.
+
+risk_scorer:
+  # Seeded so tests are deterministic. 0.0 disables random spot-checks by default.
+  random_sample_rate: 0.0
+  seed: 1337
+
+budget:
+  # Defaults applied when a commitment omits a field. max_calls: null = unlimited.
+  default_max_calls: null
+  # default_limits: an extensible map of named meters -> default ceiling. Empty by
+  # default (unlimited). Per-tool costs are configured under tool_costs below.
+  default_limits: {}
+
+# Cost model (OPERATOR FALLBACK only). The authoritative per-call cost is whatever the
+# TOOL self-declares in its MCP result _meta.vap.cost; VAP just sums those opaque
+# contributions and enforces ceilings. These values apply only when a tool does NOT
+# self-report. Meter names are opaque to VAP:
+#   tokens         LLM/tokenizer-dependent processing
+#   usd_opcost     OPERATIONAL monetary cost (named so it never collides with any
+#                  business amount; the money-mover carries the cost you most want to cap)
+#   disbursed_usd  a representative default for the refund's BUSINESS disbursement; the
+#                  real per-call value arrives in the tool's self-reported _meta.vap.cost,
+#                  so a cumulative `budget.limits.disbursed_usd` bounds aggregate
+#                  side-effect with NO protocol knowledge of what a refund is.
+# (PyYAML-only block; the tiny stdlib parser ignores nested maps it can't model and
+#  the built-in DEFAULT_TOOL_COSTS apply instead -- the test path relies on those.)
+tool_costs:
+  crm.read:          { tokens: 200 }
+  payments.refund:   { usd_opcost: 0.01, tokens: 50, disbursed_usd: 0.0 }
+  tickets.update:    { tokens: 120 }
+  tickets.escalate:  { tokens: 120 }
+  admin.delete_user: { usd_opcost: 0.0, tokens: 80 }
+
+# ---- C4 deployment-local policy hook (NOT the VAP wire protocol) ------------
+# Operator-authored, tool-specific, ARGUMENT-LEVEL rules. This is where the old
+# "refund <= $200 and a ticket id" lives now -- as LOCAL POLICY, not a protocol field.
+# VAP itself stays strictly tool-agnostic; only this hook inspects arguments. A
+# production deployment would point this at OPA/Cedar/Rego instead of the built-in
+# engine. Each rule matches on the public tool name (glob) and DENIES the call unless
+# ALL conditions in deny_unless hold.
+# (PyYAML-only block; the tiny stdlib parser cannot model this nested list, so the
+#  zero-dep test path uses the mirrored DEFAULT_POLICY_RULES in verification.py.)
+policy:
+  rules:
+    - name: refund_cap
+      tool: payments.refund
+      deny_unless:
+        arg_max: { amount_usd: 200 }           # arguments.amount_usd <= 200
+        rationale_matches: "ticket|tck[-_ ]?\\d+|sup[-_ ]?\\d+|#\\d+|case[-_ ]?\\d+"
+      message: "refund over $200 or missing ticket id (local policy refund_cap)"

@@ -1,0 +1,123 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vap.dev/schemas/0.1/verdict.schema.json",
+  "title": "VAP Verdict",
+  "description": "The server's response to a Scope Commitment, Intent Envelope, or Scope Amendment. Unlike a plain tool result, a verdict reports WHAT was decided and WHY, and is itself optionally signed so that denials are non-repudiable (mutual accountability).",
+  "type": "object",
+  "required": ["vap", "type", "session_id", "verdict", "verification"],
+  "additionalProperties": false,
+  "properties": {
+    "vap": { "type": "string", "const": "0.1" },
+    "type": { "type": "string", "const": "verdict" },
+    "session_id": { "type": "string", "minLength": 1, "maxLength": 256 },
+    "in_response_to": {
+      "type": "string",
+      "description": "What this verdict answers.",
+      "enum": ["scope_commitment", "intent_call", "scope_amendment"]
+    },
+    "verdict": {
+      "type": "string",
+      "description": "served = request executed/accepted. clarify = need more info (maps to MCP elicitation). downgraded = accepted with reduced scope/effect. denied = refused.",
+      "enum": ["served", "clarify", "downgraded", "denied"]
+    },
+    "result": {
+      "description": "Present when verdict=served and the message was an intent_call: the tool output. Shape mirrors the underlying MCP tool result.",
+      "type": "object",
+      "additionalProperties": true
+    },
+    "accepted_commitment_digest": {
+      "type": "string",
+      "description": "Present when verdict=served/downgraded for a scope_commitment or scope_amendment: digest of the commitment the server is now enforcing. The client MUST reference this state going forward.",
+      "pattern": "^[a-z0-9]+:[A-Fa-f0-9]+$"
+    },
+    "verification": {
+      "type": "object",
+      "description": "How the decision was reached — the audit-grade explanation.",
+      "required": ["checks", "method"],
+      "additionalProperties": false,
+      "properties": {
+        "checks": {
+          "type": "array",
+          "description": "Named checks that ran and their outcome, e.g. 'schema_ok', 'scope_ok', 'budget_ok', 'policy:R3_ok', 'intent_consistent'.",
+          "items": { "type": "string" }
+        },
+        "method": {
+          "type": "string",
+          "description": "Which verification tiers executed for this decision.",
+          "enum": ["static", "static+policy", "static+semantic", "static+policy+semantic"]
+        },
+        "risk_score": {
+          "type": "number",
+          "description": "The C5 risk scorer output for this call (0..1). Recorded for audit and tuning.",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "semantic_invoked": {
+          "type": "boolean",
+          "description": "Whether the LLM judge actually fired (vs. a cached verdict or deterministic-only path)."
+        },
+        "semantic_trigger": {
+          "type": "string",
+          "description": "If semantic_invoked, why: e.g. 'session_start', 'amendment', 'sensitivity', 'burn_rate_anomaly', 'looping', 'novelty', 'random_sample', 'scope_boundary'.",
+          "enum": [
+            "session_start", "amendment", "sensitivity", "burn_rate_anomaly",
+            "looping", "novelty", "threshold_proximity", "random_sample", "scope_boundary"
+          ]
+        },
+        "confidence": {
+          "type": "number",
+          "description": "Judge confidence in the decision (0..1).",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "reason": {
+          "type": "string",
+          "description": "Human-readable justification for the verdict.",
+          "maxLength": 2000
+        }
+      }
+    },
+    "clarification": {
+      "type": "object",
+      "description": "Present when verdict=clarify. Maps to an MCP elicitation/create request.",
+      "required": ["question"],
+      "additionalProperties": false,
+      "properties": {
+        "question": { "type": "string", "minLength": 1 },
+        "schema": {
+          "type": "object",
+          "description": "Optional JSON Schema for the structured answer expected (flat object, primitive props — matching MCP elicitation constraints).",
+          "additionalProperties": true
+        }
+      }
+    },
+    "downgrade": {
+      "type": "object",
+      "description": "Present when verdict=downgraded: what the server reduced.",
+      "additionalProperties": false,
+      "properties": {
+        "applied_scope": { "type": "object", "additionalProperties": true },
+        "note": { "type": "string" }
+      }
+    },
+    "audit_ref": {
+      "type": "string",
+      "description": "Reference to the signed audit record for this decision."
+    },
+    "expires_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Optional: when a served/cached semantic verdict ceases to be valid for reuse."
+    },
+    "signature": {
+      "type": "string",
+      "description": "Optional JWS over the canonicalized verdict. RECOMMENDED especially for verdict=denied/downgraded so refusals are non-repudiable and auditable by the client (mutual accountability)."
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "verdict": { "const": "clarify" } } },
+      "then": { "required": ["clarification"] }
+    }
+  ]
+}

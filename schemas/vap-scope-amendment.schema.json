@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vap.dev/schemas/0.1/scope-amendment.schema.json",
+  "title": "VAP Scope Amendment",
+  "description": "Sent when an agent legitimately needs to widen scope or budget mid-session (normal re-planning). Re-baselines the active Scope Commitment. The server MUST semantically re-verify an amendment (a deliberate, audited re-invocation of the costly check) and MAY accept, downgrade, deny, or require human approval. This is the ONLY legitimate path to widen scope; silent escape of the committed envelope is treated as drift. Like the commitment, an amendment is tool-agnostic: it widens the public tool namespace (add_scope) and/or raises universal budget meters (increase_budget) -- it never encodes a tool's argument semantics.",
+  "type": "object",
+  "required": ["vap", "type", "session_id", "prev_commitment_digest", "reason"],
+  "additionalProperties": false,
+  "properties": {
+    "vap": { "type": "string", "const": "0.1" },
+    "type": { "type": "string", "const": "scope_amendment" },
+    "session_id": { "type": "string", "minLength": 1, "maxLength": 256 },
+    "prev_commitment_digest": {
+      "type": "string",
+      "description": "Digest of the commitment (or prior amendment) this one supersedes. Forms a tamper-evident chain. Format 'sha256:<hex>'.",
+      "pattern": "^[a-z0-9]+:[A-Fa-f0-9]+$"
+    },
+    "add_scope": {
+      "type": "object",
+      "description": "Public tool-namespace scope to ADD. Same structure as Scope Commitment 'scope' -- tools_allow / tools_deny patterns only (no argument-level semantics). Amendments may only widen via add_scope and increase via increase_budget; narrowing uses replace semantics in a new commitment.",
+      "additionalProperties": false,
+      "properties": {
+        "tools_allow": { "type": "array", "items": { "type": "string" } },
+        "tools_deny": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "increase_budget": {
+      "type": "object",
+      "description": "Additional budget requested on top of the current commitment. Generic and unit-agnostic, mirroring the commitment budget: 'add_calls' raises max_calls, 'extend_deadline' moves the deadline, and 'add_limits' is a map of named meters to the amount to add to each corresponding 'limits' ceiling.",
+      "additionalProperties": false,
+      "minProperties": 1,
+      "properties": {
+        "add_calls": { "type": "integer", "exclusiveMinimum": 0 },
+        "extend_deadline": { "type": "string", "format": "date-time" },
+        "add_limits": {
+          "type": "object",
+          "description": "Map of named meters to the amount to ADD to each meter's ceiling in budget.limits (e.g. {\"usd_opcost\": 5, \"tokens\": 10000}). Mirrors scope_commitment.budget.limits.",
+          "minProperties": 1,
+          "additionalProperties": { "type": "number", "exclusiveMinimum": 0 }
+        }
+      }
+    },
+    "reason": {
+      "type": "string",
+      "description": "Why the widening is needed (e.g. 'Dispute volume requires a higher cumulative disbursement ceiling; policy R7 requires escalation'). The semantic judge evaluates this against the session goal.",
+      "minLength": 1,
+      "maxLength": 2000
+    },
+    "new_plan_digest": {
+      "type": "string",
+      "description": "Digest of the agent's updated plan after re-planning. Format 'sha256:<hex>'.",
+      "pattern": "^[a-z0-9]+:[A-Fa-f0-9]+$"
+    },
+    "signature": {
+      "type": "string",
+      "description": "JWS over the canonicalized amendment. RECOMMENDED for all amendments (they change the trust envelope); REQUIRED when require_signed=true."
+    }
+  },
+  "anyOf": [
+    { "required": ["add_scope"] },
+    { "required": ["increase_budget"] }
+  ]
+}

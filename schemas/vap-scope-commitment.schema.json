@@ -1,0 +1,116 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vap.dev/schemas/0.1/scope-commitment.schema.json",
+  "title": "VAP Scope Commitment",
+  "description": "Session-level commitment, declared once at session init (rides on MCP `initialize`). Establishes the stable goal/scope/budget envelope against which all per-call drift is measured. The server SHOULD run semantic (LLM) verification on this message; subsequent per-call checks are deterministic tests against it. VAP is strictly tool-agnostic: the protocol gates on tool IDENTITY (the public tool namespace) and on universal BUDGET meters only -- it never encodes a tool's argument/functional semantics. Argument-level rules are deployment-local operator policy, not part of this wire schema.",
+  "type": "object",
+  "required": ["vap", "type", "session_id", "goal", "scope", "budget", "principal"],
+  "additionalProperties": false,
+  "properties": {
+    "vap": {
+      "type": "string",
+      "const": "0.1",
+      "description": "VAP protocol version."
+    },
+    "type": {
+      "type": "string",
+      "const": "scope_commitment"
+    },
+    "session_id": {
+      "type": "string",
+      "description": "Unique session identifier. All Intent Envelopes and Amendments reference this.",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "goal": {
+      "type": "string",
+      "description": "Natural-language statement of what this session is for. This is the anchor the semantic judge compares calls against. Keep it specific and bounded.",
+      "minLength": 1,
+      "maxLength": 2000
+    },
+    "scope": {
+      "type": "object",
+      "description": "The allowed action envelope, gated on the PUBLIC tool namespace only -- the tool names a server advertises via MCP `tools/list`. Scope NEVER inspects argument values; argument-level rules belong to deployment-local operator policy (the C4 policy hook), not to this protocol. Drift = a call escaping this tool-name envelope.",
+      "required": ["tools_allow"],
+      "additionalProperties": false,
+      "properties": {
+        "tools_allow": {
+          "type": "array",
+          "description": "Public tool-name patterns the agent may call this session. Glob-style '*' permitted (e.g. 'crm.*'). Matched against the advertised MCP tool name only -- not against any argument.",
+          "items": { "type": "string" },
+          "minItems": 1
+        },
+        "tools_deny": {
+          "type": "array",
+          "description": "Explicit deny patterns over the same public tool namespace. Evaluated AFTER tools_allow; deny wins on conflict.",
+          "items": { "type": "string" },
+          "default": []
+        }
+      }
+    },
+    "budget": {
+      "$ref": "#/$defs/budget"
+    },
+    "plan_digest": {
+      "type": "string",
+      "description": "Hash of the agent's current internal plan. Opaque to the server (no plan content is disclosed). Used to key verdict caching and to detect re-planning. RECOMMENDED format 'sha256:<hex>'.",
+      "pattern": "^[a-z0-9]+:[A-Fa-f0-9]+$"
+    },
+    "principal": {
+      "$ref": "#/$defs/principal"
+    },
+    "signature": {
+      "$ref": "#/$defs/signature"
+    }
+  },
+  "$defs": {
+    "budget": {
+      "type": "object",
+      "description": "Multi-dimensional, unit-agnostic resource ceiling for the session. Enforced deterministically pre-execution. `max_calls` and `deadline` are universal first-class meters; `limits` is an extensible map of named meters (e.g. tokens, usd_opcost, or any custom unit) so the budget is not tied to a single currency or to tokens alone. A TOOL self-declares an opaque per-call contribution to named meters (via its MCP result `_meta.vap.cost`); the proxy SUMS those contributions and DENIES when ANY meter would exceed its ceiling, WITHOUT knowing what a meter means. This lets a commitment bound an aggregate side-effect (e.g. cumulative disbursed value) as a plain meter, with no protocol-level knowledge of the tool. At least one of max_calls / deadline / limits must be present.",
+      "additionalProperties": false,
+      "minProperties": 1,
+      "properties": {
+        "max_calls": {
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "description": "Universal ceiling on the number of tool calls in the session."
+        },
+        "deadline": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Session hard stop (RFC 3339)."
+        },
+        "limits": {
+          "type": "object",
+          "description": "Extensible map of named meters to their maximum allowed cumulative value. Keys are arbitrary unit names the proxy treats as opaque; well-known keys: `tokens` (LLM/tokenizer-dependent) and `usd_opcost` (monetary OPERATIONAL processing cost -- deliberately NOT bare 'usd' so it never collides with a business amount). Tools self-declare a per-call contribution per meter (result `_meta.vap.cost`, e.g. {\"tokens\": 50, \"usd_opcost\": 0.01, \"disbursed_usd\": 120}); the verification (LLM judge) token usage is itself billed to the `tokens` meter. Add any custom unit your tools report -- the protocol only sums and enforces ceilings.",
+          "minProperties": 1,
+          "additionalProperties": { "type": "number", "exclusiveMinimum": 0 }
+        }
+      }
+    },
+    "principal": {
+      "type": "object",
+      "description": "Who is making the request.",
+      "required": ["agent_id"],
+      "additionalProperties": false,
+      "properties": {
+        "agent_id": {
+          "type": "string",
+          "description": "Stable agent identity. RECOMMENDED a DID (e.g. 'did:web:acme.ai:agent:billing') or a verifiable agent identifier."
+        },
+        "auth": {
+          "type": "string",
+          "description": "Opaque credential reference or scheme hint (e.g. 'oauth:<token-ref>'). The actual token travels in transport headers, not here."
+        },
+        "delegated_by": {
+          "type": "string",
+          "description": "Optional: identity of the principal that delegated authority to this agent (for delegation-chain audit)."
+        }
+      }
+    },
+    "signature": {
+      "type": "string",
+      "description": "Optional JWS (RFC 7515) over the canonicalized message (JCS, RFC 8785), providing non-repudiation. REQUIRED when the server advertises require_signed=true."
+    }
+  }
+}

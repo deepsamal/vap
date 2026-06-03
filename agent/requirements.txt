@@ -1,0 +1,2 @@
+# The agent uses only the Python stdlib via the reference client.
+# (No third-party runtime dependencies.)
