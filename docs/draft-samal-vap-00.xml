@@ -1,0 +1,586 @@
+<?xml version="1.0" encoding="utf-8"?>
+<?xml-stylesheet type="text/xsl" href="rfc2629.xslt" ?>
+<!DOCTYPE rfc [
+]>
+<rfc xmlns:xi="http://www.w3.org/2001/XInclude"
+     category="exp"
+     docName="draft-samal-vap-00"
+     ipr="trust200902"
+     submissionType="IETF"
+     consensus="false"
+     version="3"
+     xml:lang="en">
+
+  <front>
+    <title abbrev="Verifiable Agent Protocol (VAP)">
+      Verifiable Agent Protocol (VAP): Intent-Bound Admission Control and Audit for Agent Tool Invocation
+    </title>
+    <seriesInfo name="Internet-Draft" value="draft-samal-vap-00"/>
+
+    <author fullname="Deep Samal" initials="D." surname="Samal">
+      <organization>Independent</organization>
+      <address>
+        <email>deep.samal@gmail.com</email>
+      </address>
+    </author>
+
+    <date year="2026" month="June" day="2"/>
+
+    <area>Security</area>
+    <workgroup>Independent Submission</workgroup>
+
+    <keyword>agent</keyword>
+    <keyword>LLM</keyword>
+    <keyword>MCP</keyword>
+    <keyword>intent</keyword>
+    <keyword>admission control</keyword>
+    <keyword>audit</keyword>
+
+    <abstract>
+      <t>
+        This document specifies the Verifiable Agent Protocol (VAP), a thin,
+        tool-agnostic verification layer for protocols in which an autonomous
+        agent (a client driven by a large language model) invokes tools exposed
+        by a server (for example, the Model Context Protocol, MCP). Existing
+        tool-invocation protocols convey WHAT tool is to be run and, with
+        authorization extensions, WHO is calling, but carry no machine-verifiable
+        statement of WHY a call is being made. VAP adds a declared, structured,
+        optionally signed statement of purpose and a stable per-session
+        scope-and-budget commitment, against which a server performs admission
+        control before executing a call. VAP defines four messages -- Scope
+        Commitment, Intent Envelope, Scope Amendment, and Verdict -- carried
+        inside the host protocol's existing metadata channel, requiring no change
+        to that protocol and no change to existing servers. VAP targets erroneous
+        and runaway agent behavior, session cost control, and audit; it is
+        defense-in-depth for, not a replacement for, authentication and
+        authorization.
+      </t>
+    </abstract>
+  </front>
+
+  <middle>
+
+    <section anchor="introduction">
+      <name>Introduction</name>
+      <t>
+        Tool-invocation protocols for LLM-driven agents, most prominently the
+        Model Context Protocol <xref target="MCP"/>, expose a server's
+        capabilities to a client that decides, at runtime, which tools to call.
+        The decision is made by a language model. The request conveys the tool
+        name and arguments; an authorization extension may convey the caller's
+        identity and granted scopes. The request does not convey, in any
+        machine-verifiable form, the caller's PURPOSE: the goal it is pursuing
+        and the reason this particular call serves that goal.
+      </t>
+      <t>
+        Because purpose is absent from the wire, a server cannot determine
+        whether a syntactically valid, authorized call is consistent with what
+        the agent is actually trying to do. A confused, mis-prompted, or
+        compromised agent can therefore issue a sequence of individually valid
+        but collectively incoherent calls -- exhausting budget, causing
+        unintended side effects, and producing logs that record WHAT happened but
+        not WHY.
+      </t>
+      <t>
+        VAP addresses this by making purpose a first-class, declared, and
+        verifiable element of a session, and by giving the server an
+        admission-control procedure that evaluates each call against that
+        declared purpose before execution. VAP is deliberately thin: it reuses
+        the host protocol's transport, identity, and metadata facilities, and it
+        confines itself to tool IDENTITY (the public tool namespace) and
+        universal resource BUDGET. It never encodes a tool's argument semantics;
+        argument-level rules are deployment-local operator policy
+        (<xref target="verification"/>).
+      </t>
+      <t>
+        VAP is defense-in-depth. Declared purpose is attacker-controllable text;
+        VAP raises the cost of, and the auditability of, incoherent behavior, but
+        MUST NOT be relied upon as an authentication or authorization mechanism.
+      </t>
+    </section>
+
+    <section anchor="terminology">
+      <name>Terminology</name>
+      <t>
+        The key words "MUST", "MUST NOT", "REQUIRED", "SHALL", "SHALL NOT",
+        "SHOULD", "SHOULD NOT", "RECOMMENDED", "MAY", and "OPTIONAL" in this
+        document are to be interpreted as described in BCP 14
+        <xref target="RFC2119"/> <xref target="RFC8174"/> when, and only when,
+        they appear in all capitals, as shown here.
+      </t>
+      <dl>
+        <dt>Agent (Client):</dt>
+        <dd>The LLM-driven party that initiates tool calls.</dd>
+        <dt>Server:</dt>
+        <dd>The party that exposes tools and executes them.</dd>
+        <dt>Verifier:</dt>
+        <dd>
+          The component that performs VAP admission control. It MAY be
+          co-located with the Server, or deployed as a reverse proxy in front of
+          it (the RECOMMENDED deployment, as it requires no Server change).
+        </dd>
+        <dt>Scope Commitment:</dt>
+        <dd>A per-session declaration of goal, allowed tool namespace, and budget
+        (<xref target="msg-commitment"/>).</dd>
+        <dt>Intent Envelope:</dt>
+        <dd>A per-call declaration of the rationale for a single tool call
+        (<xref target="msg-intent"/>).</dd>
+        <dt>Scope Amendment:</dt>
+        <dd>A signed re-baselining of an active Scope Commitment
+        (<xref target="msg-amendment"/>).</dd>
+        <dt>Verdict:</dt>
+        <dd>The Verifier's decision and its justification
+        (<xref target="msg-verdict"/>).</dd>
+        <dt>Drift:</dt>
+        <dd>
+          A requested call that escapes the active Scope Commitment's tool
+          namespace or budget. Drift is defined as escape of the committed
+          envelope, NOT as deviation from a predicted plan.
+        </dd>
+        <dt>Meter:</dt>
+        <dd>A named, additive consumption counter (e.g. "tokens", "usd_opcost")
+        with a ceiling (<xref target="budget"/>).</dd>
+      </dl>
+    </section>
+
+    <section anchor="architecture">
+      <name>Architecture and Scope</name>
+      <t>VAP separates two concerns that are frequently conflated:</t>
+      <ul>
+        <li>
+          Tool IDENTITY -- the name a server advertises for a tool. This is
+          public (it appears in the host protocol's tool listing) and is the ONLY
+          tool attribute VAP gates on.
+        </li>
+        <li>
+          Tool INTERNALS -- the meaning of a tool's arguments and effects. VAP
+          does NOT encode these. Operators who need argument-level constraints
+          express them in a deployment-local policy hook
+          (<xref target="verification"/>), outside this specification.
+        </li>
+      </ul>
+      <t>
+        This boundary keeps VAP universal: it applies identically to a payments
+        tool and to a read-only search tool, and a Verifier never needs to
+        understand any tool's domain.
+      </t>
+      <t>
+        In scope: declared purpose, per-session scope/budget commitment,
+        pre-execution admission control, intent-bound audit.
+      </t>
+      <t>
+        Out of scope: authentication, authorization, tool/server attestation,
+        transport security, and tool argument semantics. VAP composes with, and
+        relies upon, separate mechanisms for these.
+      </t>
+    </section>
+
+    <section anchor="overview">
+      <name>Protocol Overview</name>
+      <t>A VAP session has two tiers:</t>
+      <ul>
+        <li>
+          Session tier. Once, at session initialization, the Agent sends a Scope
+          Commitment (<xref target="msg-commitment"/>). The Verifier MAY perform
+          semantic verification here and, if it accepts, caches the commitment
+          and returns its digest in a Verdict.
+        </li>
+        <li>
+          Call tier. For each tool call, the Agent sends an Intent Envelope
+          (<xref target="msg-intent"/>) referencing the session. The Verifier
+          performs deterministic checks against the cached commitment and, gated
+          by a risk score (<xref target="risk"/>), MAY perform semantic
+          verification. It returns a Verdict (<xref target="msg-verdict"/>) and,
+          if served, the tool result.
+        </li>
+      </ul>
+      <t>
+        When legitimate re-planning requires widening the committed envelope, the
+        Agent sends a Scope Amendment (<xref target="msg-amendment"/>), which the
+        Verifier re-verifies and which re-baselines the commitment. Silent escape
+        of the committed envelope is treated as Drift and denied.
+      </t>
+      <t>
+        All VAP messages are carried inside the host protocol's metadata channel
+        (<xref target="mcp-binding"/>) and are therefore transparent to
+        host-protocol parties that do not implement VAP.
+      </t>
+    </section>
+
+    <section anchor="msg-commitment">
+      <name>Message: Scope Commitment</name>
+      <t>Sent once per session. Fields:</t>
+      <ul>
+        <li>vap (string, REQUIRED): protocol version, "0.1".</li>
+        <li>type (string, REQUIRED): "scope_commitment".</li>
+        <li>session_id (string, REQUIRED): unique session identifier.</li>
+        <li>goal (string, REQUIRED): natural-language session purpose; the anchor
+        for semantic verification.</li>
+        <li>
+          scope (object, REQUIRED): tools_allow (array of string, REQUIRED) is a
+          set of public tool-name patterns permitted this session, with "*" glob
+          permitted; tools_deny (array of string, OPTIONAL) is a set of deny
+          patterns, evaluated after tools_allow, with deny winning on conflict.
+        </li>
+        <li>budget (object, REQUIRED): see <xref target="budget"/>. At least one
+        of max_calls, deadline, or limits MUST be present.</li>
+        <li>
+          plan_digest (string, OPTIONAL): hash of the Agent's current plan,
+          opaque to the Verifier; used for verdict caching and re-plan detection.
+          No plan content is disclosed.
+        </li>
+        <li>principal (object, REQUIRED): agent_id (RECOMMENDED a DID), and
+        OPTIONAL auth reference and delegated_by.</li>
+        <li>
+          signature (string, OPTIONAL): JWS <xref target="RFC7515"/> over the
+          JCS-canonicalized <xref target="RFC8785"/> message. REQUIRED if the
+          Verifier advertises require_signed.
+        </li>
+      </ul>
+      <t>The normative JSON Schema is in <xref target="VAP-SCHEMAS"/>.</t>
+    </section>
+
+    <section anchor="msg-intent">
+      <name>Message: Intent Envelope</name>
+      <t>Sent per tool call. Fields:</t>
+      <ul>
+        <li>vap (REQUIRED): "0.1".</li>
+        <li>type (REQUIRED): "intent_call".</li>
+        <li>session_id (REQUIRED): MUST reference an accepted Scope Commitment.</li>
+        <li>
+          intent (object, REQUIRED): rationale (string, REQUIRED) states why this
+          call serves the goal; expected_effect (string, REQUIRED) states the
+          bounded outcome expected; step (integer, OPTIONAL) is an advisory plan
+          position and Drift is NOT defined relative to this value; sensitivity
+          (string, OPTIONAL) is a self-declared risk class, one of "reads",
+          "writes_data", "writes_money", "deletes", "sends_external",
+          "grants_access", which the Verifier MAY override; reasoning_digest
+          (string, OPTIONAL) is a hash of the Agent's full reasoning, retained
+          client-side, enabling later audit without transmitting the reasoning
+          itself.
+        </li>
+        <li>
+          call (object, REQUIRED): tool (string) and arguments (object). The
+          Verifier checks tool against the committed namespace. Argument-level
+          constraints, if any, are applied by deployment-local policy
+          (<xref target="verification"/>), not by this protocol.
+        </li>
+        <li>signature (OPTIONAL): as in <xref target="msg-commitment"/>.</li>
+      </ul>
+      <t>
+        The Agent MUST NOT transmit raw chain-of-thought in the Intent Envelope.
+        A minimal, structured intent claim is REQUIRED; full reasoning, if
+        retained, is referenced by reasoning_digest only.
+      </t>
+    </section>
+
+    <section anchor="msg-amendment">
+      <name>Message: Scope Amendment</name>
+      <t>
+        Sent to widen an active commitment during legitimate re-planning. Fields:
+        vap, type ("scope_amendment"), session_id, prev_commitment_digest
+        (REQUIRED, forming a tamper-evident chain), reason (REQUIRED), and at
+        least one of add_scope (tools_allow / tools_deny only) or increase_budget
+        (add_calls, extend_deadline, add_limits). An OPTIONAL new_plan_digest and
+        signature MAY be present; the Verifier SHOULD require amendments to be
+        signed because they alter the trust envelope.
+      </t>
+      <t>
+        The Verifier MUST re-verify an amendment
+        (<xref target="verification"/>, step S2) and MAY accept, downgrade, deny,
+        or require human approval. An amendment is the ONLY legitimate means of
+        widening scope or budget.
+      </t>
+    </section>
+
+    <section anchor="msg-verdict">
+      <name>Message: Verdict</name>
+      <t>
+        The Verifier's response to any VAP message. Fields: vap, type
+        ("verdict"), session_id, in_response_to, and:
+      </t>
+      <ul>
+        <li>verdict (string, REQUIRED): "served", "clarify", "downgraded", or
+        "denied".</li>
+        <li>result (object, OPTIONAL): the tool output, present when an
+        intent_call is served.</li>
+        <li>accepted_commitment_digest (string, OPTIONAL): the commitment the
+        Verifier now enforces (for commitments/amendments).</li>
+        <li>
+          verification (object, REQUIRED): checks (array), method ("static",
+          "static+policy", "static+semantic", or "static+policy+semantic"), and
+          OPTIONAL risk_score, semantic_invoked, semantic_trigger, confidence,
+          reason.
+        </li>
+        <li>clarification (object): REQUIRED when verdict is "clarify"; maps to a
+        host-protocol user-elicitation request.</li>
+        <li>audit_ref (string, OPTIONAL): reference to the audit record.</li>
+        <li>
+          signature (string, OPTIONAL): JWS over the verdict. RECOMMENDED for
+          "denied" and "downgraded" so that refusals are non-repudiable and
+          independently auditable by the Agent (mutual accountability).
+        </li>
+      </ul>
+    </section>
+
+    <section anchor="verification">
+      <name>Verification Procedure</name>
+      <t>On a Scope Commitment (session start):</t>
+      <ol>
+        <li>
+          S1. Authentication/authorization (delegated to the host mechanism). On
+          failure, deny the session.
+        </li>
+        <li>
+          S2. Semantic verification: assess whether goal is coherent and the
+          requested scope is proportionate to it. On acceptance, cache the
+          commitment and return its digest.
+        </li>
+      </ol>
+      <t>On an Intent Envelope (per call), in order, failing closed:</t>
+      <ol>
+        <li>C1. Bind: session_id MUST map to an accepted commitment.</li>
+        <li>
+          C2. Scope: call.tool MUST match tools_allow and MUST NOT match
+          tools_deny. Only the tool NAME is examined. A scope escape is Drift.
+        </li>
+        <li>
+          C3. Budget: projected consumption MUST NOT exceed any meter, the call
+          count, or the deadline (<xref target="budget"/>).
+        </li>
+        <li>
+          C4. Policy (OPTIONAL, deployment-local): operator-authored rules MAY
+          inspect arguments and impose constraints. This hook is where
+          tool-specific limits (e.g. a per-call monetary cap) live. It is not
+          part of the VAP wire schema and MAY be absent.
+        </li>
+        <li>
+          C5. Semantic (gated): if the risk score (<xref target="risk"/>) crosses
+          the configured threshold, assess whether the call is consistent with
+          the session goal and rationale.
+        </li>
+      </ol>
+      <t>
+        On a Scope Amendment: re-run S2 against the requested widening; on
+        acceptance, re-baseline and chain the commitment digest.
+      </t>
+    </section>
+
+    <section anchor="risk">
+      <name>Risk-Scored Semantic Admission Control</name>
+      <t>
+        Semantic verification (C5/S2) is the most expensive check and, if applied
+        naively, can cost more than it saves and can be evaded. A Verifier MUST
+        NOT gate C5 solely on proximity to a budget limit.
+      </t>
+      <t>
+        A Verifier SHOULD compute, for every call, a cheap deterministic risk
+        score from signals including: the declared or server-assigned
+        sensitivity/irreversibility class; burn-rate anomaly (consumption
+        outpacing the plan); looping (repeated identical calls); novelty (first
+        use of a tool, or arguments far from prior accepted calls); and proximity
+        to a limit. A Verifier MUST additionally invoke C5 on a configurable
+        random sample of otherwise-passing calls, so that an Agent cannot
+        reliably stay below deterministic thresholds while drifting.
+      </t>
+      <t>
+        A Verifier SHOULD cache semantic verdicts keyed by (plan_digest, tool,
+        argument-shape) to bound repeated cost. Any inference consumed by C5/S2
+        SHOULD itself be billed to a budget meter (<xref target="budget"/>).
+      </t>
+    </section>
+
+    <section anchor="budget">
+      <name>Budget Metering</name>
+      <t>
+        A budget is multi-dimensional and unit-agnostic. It comprises the
+        universal meters max_calls and deadline, and an extensible "limits" map
+        from a meter name to its maximum cumulative value.
+      </t>
+      <t>
+        A Verifier treats meter names as OPAQUE. A tool self-declares its per-call
+        contribution to one or more meters by returning a cost map in its result
+        metadata (<xref target="mcp-binding"/>). The Verifier sums declared
+        contributions and denies any call that would cause any meter to exceed its
+        ceiling. If a tool declares no contribution, the operator MAY supply
+        default per-tool costs.
+      </t>
+      <t>
+        This design lets a commitment bound an aggregate side effect (for example,
+        total monetary value disbursed across many calls) as an ordinary meter,
+        WITHOUT the Verifier possessing any knowledge of what the meter represents
+        or what the tool does. Well-known meter names include "tokens" and
+        "usd_opcost" (operational cost); all others are deployment-defined.
+      </t>
+    </section>
+
+    <section anchor="mcp-binding">
+      <name>Transport Binding (MCP)</name>
+      <t>
+        When the host protocol is MCP <xref target="MCP"/>, VAP messages are
+        carried in the "_meta" object that MCP permits on requests and results,
+        under the key "vap". Specifically:
+      </t>
+      <ul>
+        <li>The Scope Commitment is carried in params._meta.vap on the MCP
+        "initialize" request.</li>
+        <li>The Intent Envelope is carried in params._meta.vap on each
+        "tools/call" request.</li>
+        <li>A tool's per-call cost map is carried in the MCP result under
+        result._meta.vap.cost.</li>
+        <li>
+          The Verdict is carried in the MCP result _meta, and, when a call is
+          denied, the Verifier returns an MCP tool error result rather than an
+          HTTP-layer error, so that the host session is preserved.
+        </li>
+        <li>A "clarify" verdict SHOULD be realized using MCP elicitation.</li>
+      </ul>
+      <t>
+        Because all VAP data rides in _meta, an MCP server that does not implement
+        VAP is unaffected, and a VAP Verifier deployed as a proxy is transparent
+        to it. Other host bindings (e.g. A2A) MAY be defined in companion
+        documents.
+      </t>
+    </section>
+
+    <section anchor="negotiation">
+      <name>Capability Negotiation</name>
+      <t>
+        A Verifier advertises its VAP posture during host-protocol capability
+        negotiation, including whether a Scope Commitment is required, whether
+        messages must be signed, which verification tiers it runs, the conditions
+        under which it invokes semantic verification, and its audit format. An
+        Agent that does not present VAP metadata MAY be rejected, served in a
+        restricted mode, or served with intent treated as advisory, at the
+        operator's discretion.
+      </t>
+    </section>
+
+    <section anchor="audit">
+      <name>Audit</name>
+      <t>
+        For every decision, a Verifier SHOULD emit an append-only audit record
+        binding session_id, the active commitment digest, principal, intent,
+        call, verdict, verification result, a hash of any result, and a
+        timestamp; and a session-level record of the commitment and every
+        amendment. Records SHOULD be signed. Unlike a conventional access log, a
+        VAP audit answers why a call was made, within what committed envelope, and
+        how it was adjudicated.
+      </t>
+    </section>
+
+    <section anchor="security">
+      <name>Security Considerations</name>
+      <t>
+        Declared purpose is attacker-controllable. An adversarial Agent can author
+        a plausible rationale for a harmful call. VAP therefore MUST NOT be used
+        as an authentication or authorization mechanism; it is defense-in-depth
+        that raises the cost and auditability of incoherent behavior and is most
+        effective against confused or mis-prompted (as opposed to actively
+        malicious) Agents.
+      </t>
+      <t>
+        Semantic verification employs an LLM and is subject to prompt injection
+        via the goal, rationale, or tool content it examines. Implementations
+        SHOULD isolate the judge's instruction channel from examined content and
+        SHOULD treat all examined fields as untrusted.
+      </t>
+      <t>
+        The semantic judge can be evaded by an Agent that keeps each call below
+        deterministic risk thresholds; mandatory random sampling
+        (<xref target="risk"/>) mitigates but does not eliminate this.
+      </t>
+      <t>
+        A Verifier that calls an external judge endpoint MUST fail closed by
+        default: on judge error or timeout, the call is treated as not consistent
+        (clarify/deny), never served by default.
+      </t>
+      <t>
+        Signatures (commitments, amendments, verdicts) provide non-repudiation
+        only if key distribution and canonicalization are sound; implementations
+        MUST use JCS <xref target="RFC8785"/> before signing to avoid
+        cross-implementation signature divergence.
+      </t>
+      <t>
+        Intent and rationale fields may contain sensitive information; raw
+        chain-of-thought MUST NOT be transmitted (<xref target="msg-intent"/>).
+        Audit records may contain sensitive data and MUST be access-controlled.
+      </t>
+    </section>
+
+    <section anchor="iana">
+      <name>IANA Considerations</name>
+      <t>
+        This document has no IANA actions. A future revision may request
+        registration of a well-known meter-name registry and a VAP version
+        registry.
+      </t>
+    </section>
+
+  </middle>
+
+  <back>
+    <references>
+      <name>Normative References</name>
+      <reference anchor="RFC2119" target="https://www.rfc-editor.org/info/rfc2119">
+        <front>
+          <title>Key words for use in RFCs to Indicate Requirement Levels</title>
+          <author initials="S." surname="Bradner" fullname="S. Bradner"/>
+          <date year="1997" month="March"/>
+        </front>
+        <seriesInfo name="BCP" value="14"/>
+        <seriesInfo name="RFC" value="2119"/>
+      </reference>
+      <reference anchor="RFC8174" target="https://www.rfc-editor.org/info/rfc8174">
+        <front>
+          <title>Ambiguity of Uppercase vs Lowercase in RFC 2119 Key Words</title>
+          <author initials="B." surname="Leiba" fullname="B. Leiba"/>
+          <date year="2017" month="May"/>
+        </front>
+        <seriesInfo name="BCP" value="14"/>
+        <seriesInfo name="RFC" value="8174"/>
+      </reference>
+      <reference anchor="RFC7515" target="https://www.rfc-editor.org/info/rfc7515">
+        <front>
+          <title>JSON Web Signature (JWS)</title>
+          <author initials="M." surname="Jones" fullname="M. Jones"/>
+          <author initials="J." surname="Bradley" fullname="J. Bradley"/>
+          <author initials="N." surname="Sakimura" fullname="N. Sakimura"/>
+          <date year="2015" month="May"/>
+        </front>
+        <seriesInfo name="RFC" value="7515"/>
+      </reference>
+      <reference anchor="RFC8785" target="https://www.rfc-editor.org/info/rfc8785">
+        <front>
+          <title>JSON Canonicalization Scheme (JCS)</title>
+          <author initials="A." surname="Rundgren" fullname="A. Rundgren"/>
+          <author initials="B." surname="Jordan" fullname="B. Jordan"/>
+          <author initials="S." surname="Erdtman" fullname="S. Erdtman"/>
+          <date year="2020" month="June"/>
+        </front>
+        <seriesInfo name="RFC" value="8785"/>
+      </reference>
+    </references>
+
+    <references>
+      <name>Informative References</name>
+      <reference anchor="MCP" target="https://modelcontextprotocol.io/">
+        <front>
+          <title>Model Context Protocol Specification</title>
+          <author>
+            <organization>Anthropic</organization>
+          </author>
+          <date year="2025"/>
+        </front>
+      </reference>
+      <reference anchor="VAP-SCHEMAS" target="https://vap.dev/schemas/0.1/">
+        <front>
+          <title>VAP JSON Schemas 0.1</title>
+          <author initials="D." surname="Samal" fullname="Deep Samal"/>
+          <date year="2026"/>
+        </front>
+      </reference>
+    </references>
+  </back>
+
+</rfc>

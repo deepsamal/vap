@@ -15,6 +15,9 @@ mid-session requires a **signed Scope Amendment**; anything else is drift.
 
 The four JSON Schemas in `schemas/` are the authoritative contract.
 
+**Specification:** [draft-samal-vap (IETF Internet-Draft)](https://datatracker.ietf.org/doc/draft-samal-vap/).
+A local copy of the draft (text + xml2rfc v3 source) is in [`docs/`](docs/).
+
 ---
 
 ## What is core protocol vs deployment-local
