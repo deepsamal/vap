@@ -406,7 +406,7 @@ Env overrides: `VAP_JUDGE`, `VAP_CONFIG`, `UPSTREAM_URL`, `VAP_AUDIT_PATH`,
 
 ### Scope Amendment (server-side)
 
-A signed `vap/amend` widens scope/budget mid-session, but **the server-side policy may deny it** if the justification is inadequate. Unsigned amendments are rejected (`amend_signed_fail`); signed-but-unjustified ones are `denied` and the original commitment stands.
+As an example, a signed `vap/amend` may request for widening scope/budget mid-session, but **the server-side policy may deny it** if the justification is inadequate. Unsigned amendments are rejected (`amend_signed_fail`); signed-but-unjustified ones are `denied` and the original commitment stands.
 
 **Example — agent runs low on tokens during a long conversation and requests more:**
 
