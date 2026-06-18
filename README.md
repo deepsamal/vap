@@ -404,7 +404,7 @@ Env overrides: `VAP_JUDGE`, `VAP_CONFIG`, `UPSTREAM_URL`, `VAP_AUDIT_PATH`,
 
 ## Notes
 
-### Protocol A — Scope Amendment (server-side)
+### Scope Amendment (server-side)
 
 A signed `vap/amend` widens scope/budget mid-session, but **the server-side policy may deny it** if the justification is inadequate. Unsigned amendments are rejected (`amend_signed_fail`); signed-but-unjustified ones are `denied` and the original commitment stands.
 
@@ -424,7 +424,7 @@ A signed `vap/amend` widens scope/budget mid-session, but **the server-side poli
 
 Without a valid `justification` (or if it fails policy), the request is **denied** and the token meter is not raised.
 
-### Protocol B — Clarify Verdict (agent-side)
+### Clarify Verdict (agent-side)
 
 A `clarify` verdict does **not** call upstream; resolving it is **governed by the agent's policies**. If the agent's policy chooses not to clarify, **the session is terminated** — `clarify` is never silently dropped or auto-served.
 
