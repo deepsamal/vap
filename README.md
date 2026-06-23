@@ -402,6 +402,34 @@ Env overrides: `VAP_JUDGE`, `VAP_CONFIG`, `UPSTREAM_URL`, `VAP_AUDIT_PATH`,
 
 ---
 
+## Notes
+
+### Scope Amendment (server-side)
+
+As an example, a signed `vap/amend` may request for widening scope/budget mid-session, but **the server-side policy may deny it** if the justification is inadequate. Unsigned amendments are rejected (`amend_signed_fail`); signed-but-unjustified ones are `denied` and the original commitment stands.
+
+**Example — agent runs low on tokens during a long conversation and requests more:**
+
+```json
+{
+  "jsonrpc": "2.0", "id": 7, "method": "vap/amend",
+  "params": { "_meta": { "vap": { "amendment": {
+    "vap": "0.1", "type": "amendment", "session_id": "vap-sess-0001",
+    "justification": "Conversation still active; remaining token budget insufficient to process further turns.",
+    "increase_budget": { "add_limits": { "tokens": 50000 } },
+    "signature": "hmac:agent"
+  } } } }
+}
+```
+
+Without a valid `justification` (or if it fails policy), the request is **denied** and the token meter is not raised.
+
+### Clarify Verdict (agent-side)
+
+A `clarify` verdict does **not** call upstream; resolving it is **governed by the agent's policies**. If the agent's policy chooses not to clarify, **the session is terminated** — `clarify` is never silently dropped or auto-served.
+
+---
+
 ## License
 
 Licensed under the [Apache License 2.0](LICENSE). Copyright 2026 Deep Samal.
